@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile OPK client
+        run: python -m py_compile scripts/opk.py
+      - name: CLI help smoke test
+        run: python scripts/opk.py --help >/dev/null
+      - name: Validate example JSON
+        run: python -m json.tool .opk.example.json >/dev/null
+      - name: Verify skill entrypoint
+        run: test -s SKILL.md && grep -q "Mandatory execution loop" SKILL.md
