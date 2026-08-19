@@ -31,4 +31,5 @@ jobs:
           grep -q "No API key is required" SKILL.md
           grep -q "projects/similar" SKILL.md
           grep -q "project-ids" API.md
-          ! grep -R "OPK_API_KEY" SKILL.md README.md AGENTS.md scripts/opk.py API.md
+          grep -q "No OPK API key is required" install.sh
+          ! grep -R "OPK_API_KEY" SKILL.md README.md AGENTS.md scripts/opk.py API.md install.sh
