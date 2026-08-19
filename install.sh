@@ -18,8 +18,10 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$TARGET/scripts"
 cp "$ROOT/SKILL.md" "$TARGET/SKILL.md"
+cp "$ROOT/API.md" "$TARGET/API.md"
 cp "$ROOT/scripts/opk.py" "$TARGET/scripts/opk.py"
 chmod +x "$TARGET/scripts/opk.py"
 
 echo "Installed OPK Skill to: $TARGET"
-echo "Next: export OPK_API_KEY='<your-key>'"
+echo "No OPK API key is required."
+echo "Default API: https://mes.fhkq.best"
