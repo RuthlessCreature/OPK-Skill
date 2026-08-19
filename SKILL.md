@@ -1,235 +1,297 @@
 ---
 name: opk-project-sync
-description: Use OPK as the authoritative project-state store. Read current project, milestone, issue, and next-action context before doing project work; after meaningful work, automatically update OPK and verify the write by reading it back.
+description: Use OPK as the authoritative project-state store. Directly call the zero-auth OPK REST API, resolve or bootstrap the project safely, read current milestones/issues/next action before work, then write and verify progress after meaningful work.
 ---
 
 # OPK Project Sync Skill
 
 ## Purpose
 
-This skill connects an agent to the OPK project dashboard at `https://mes.fhkq.best`.
+Connect any agent directly to OPK at:
 
-OPK is the **project execution source of truth** for:
+```text
+https://mes.fhkq.best
+```
+
+OPK is the live project execution source of truth for:
 
 - projects
 - project status and priority
-- milestones / planned nodes
+- milestones / plan nodes
 - issues / blockers
-- issue severity and status
 - next actions
-- notes / progress summaries
+- operational notes
 
-The agent must use OPK as a live operational memory rather than relying only on chat history, repository text, or assumptions.
+The agent should not rely only on chat history or repository text when OPK is available.
 
-## Required runtime configuration
+## Authentication
 
-The agent needs:
+**No API key is required.**
 
-```text
-OPK_API_KEY=<Bearer API key>
-```
+All `/api/v1/*` endpoints are intentionally available without Bearer auth for this single-user OPK deployment.
 
-Optional:
+Do not invent or request `OPK_API_KEY`.
+
+Optional runtime variables only:
 
 ```text
 OPK_BASE_URL=https://mes.fhkq.best
 OPK_PROJECT_ID=<fixed project id>
-OPK_PROJECT_NAME=<project name or search hint>
+OPK_PROJECT_NAME=<project name/search hint>
 ```
 
-A repository may also contain `.opk.json`:
+A project repository may contain `.opk.json`:
 
 ```json
 {
   "base_url": "https://mes.fhkq.best",
-  "project_id": "...",
-  "project_name": "optional human-readable name"
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "project_name": "Human readable name"
 }
 ```
 
-Never print, commit, persist, or expose `OPK_API_KEY`.
-
-## Tooling
-
-Preferred client:
+## Preferred client
 
 ```bash
 python /path/to/OPK-Skill/scripts/opk.py <command>
 ```
 
-It uses only the Python standard library.
+It uses only Python standard library. If shell execution is unavailable but HTTP is available, use the REST API directly. See [`API.md`](./API.md).
 
-If the helper script is unavailable but HTTP access is available, call the OPK REST API directly with:
+# Mandatory lifecycle
 
-```http
-Authorization: Bearer <OPK_API_KEY>
-Content-Type: application/json
-```
+## Phase 0 — Resolve or bootstrap the project
 
-## Mandatory execution loop
-
-### 1. Before meaningful project work: READ
-
-Before making a plan, changing code, preparing a delivery, debugging, implementing a feature, or reporting project status, get OPK context first whenever the work can be associated with an OPK project.
+Before writing project state, resolve the project safely.
 
 Resolution precedence:
 
-1. Explicit project ID from the user/task.
+1. Explicit project ID from the task/user.
 2. `OPK_PROJECT_ID`.
 3. `.opk.json` `project_id`.
-4. Explicit project name from the user/task.
-5. `OPK_PROJECT_NAME` or `.opk.json` `project_name`.
-6. Search OPK by the repository/project name.
+4. Explicit project name.
+5. `OPK_PROJECT_NAME` / `.opk.json` `project_name`.
+6. Repository or workspace name.
 
-Use:
+If an exact project ID is known, read it directly.
 
-```bash
-python scripts/opk.py context --project-id <id>
+If there is no fixed ID and this is the first submission, **never blindly create a project**.
+
+### Mandatory duplicate/similarity check
+
+Call:
+
+```http
+GET /api/v1/projects/similar?q=<project-name>
 ```
 
 or:
 
 ```bash
-python scripts/opk.py context --q "<name>"
+python scripts/opk.py similar "<project-name>"
+```
+
+### If no same/similar candidate exists
+
+The agent may automatically initialize a new project:
+
+```bash
+python scripts/opk.py init-project \
+  --name "<project-name>" \
+  --status active \
+  --priority medium \
+  --next-action "<concrete next action>"
+```
+
+`init-project` will:
+
+1. run the similarity check;
+2. call `POST /api/v1/project-ids` to get a fresh UUID;
+3. create the project using that exact project ID;
+4. read the project back;
+5. write `.opk.json` by default when filesystem access permits.
+
+### If OPK contains same or similar projects
+
+**STOP before any create/update.**
+
+Show the user the candidate project names, IDs, similarity scores, current status and next action where available.
+
+Ask the user to choose exactly one:
+
+1. **新提交 / Create new** — create a separate project with a fresh project ID.
+2. **覆盖 / Overwrite existing** — update the selected existing project.
+
+Do not infer this choice yourself.
+
+After the user chooses **new**:
+
+```bash
+python scripts/opk.py init-project --name "<name>" --new ...
+```
+
+After the user chooses **overwrite**:
+
+```bash
+python scripts/opk.py init-project --name "<name>" --overwrite <project-id> ...
+```
+
+In this skill, **overwrite means update the existing project fields while preserving its existing milestones/issues**. It is not delete-and-recreate.
+
+## Phase 1 — READ before meaningful work
+
+Before planning, coding, debugging, deployment, report generation, or project status reporting, read the current project context:
+
+```bash
+python scripts/opk.py context --project-id <id>
 ```
 
 Read at minimum:
 
-- project.status
-- project.priority
-- project.next_action
-- project.notes
-- milestones and their statuses
-- open/in-progress/waiting issues
-- issue severity and next_action
+- `status`
+- `priority`
+- `next_action`
+- `notes`
+- milestones and statuses
+- open / in_progress / waiting issues
+- issue severity and next actions
 
-### 2. During work: USE THE STATE
+Use OPK to determine what is already done and what is blocked. Do not duplicate milestones or issues merely because the current chat lacks history.
 
-Use OPK context to determine:
+## Phase 2 — WORK using current state
 
-- what is already done
-- what is currently in progress
-- the next planned node
-- whether a blocker already exists
-- which issue is most urgent
-- what the last recorded next action was
+Perform the requested work using OPK as operational context.
 
-Do not create duplicate milestones/issues just because the current conversation lacks earlier context.
+If verified new facts conflict with OPK, the verified new facts may become updates after execution.
 
-If new facts conflict with OPK, treat the new verified facts as candidate updates and write them back after execution.
+Do not change project state based on speculation.
 
-### 3. After meaningful work: WRITE
+## Phase 3 — WRITE after meaningful work
 
-After completing meaningful work, **automatically synchronize OPK before giving the final completion response**.
+Before the final completion response, automatically synchronize meaningful results to OPK.
 
-A meaningful work result includes any of the following:
+Meaningful results include:
 
 - implementation completed
 - bug fixed
-- deployment completed or failed
-- test/validation completed
-- customer/internal decision reached
+- deployment success/failure
+- validation/test result
+- deliverable produced
 - milestone progressed
-- blocker discovered
-- blocker resolved
+- blocker discovered/resolved
 - next action changed
 - project paused/resumed/completed
-- deliverable produced
-- external dependency discovered
 
-Update only fields supported by evidence from the actual work.
+Typical mapping:
 
-Typical mappings:
-
-| Work result | OPK update |
+| Work result | OPK action |
 |---|---|
-| milestone completed | milestone `status=done`, append concise notes |
-| work started but incomplete | milestone `status=in_progress` |
-| hard blocker found | create/update issue, `status=open|in_progress`, severity based on impact |
-| waiting on external party | issue `status=waiting` |
+| milestone completed | milestone `status=done` + concise notes |
+| work started/incomplete | milestone `status=in_progress` |
+| hard blocker | create/update issue |
+| waiting on external dependency | issue `status=waiting` |
 | blocker fixed | issue `status=resolved` or `closed` |
-| project next step changes | project `next_action` |
-| important progress | project `notes` |
-| project fully complete | project `status=done` only if genuinely complete |
+| next step changed | update project `next_action` |
+| project genuinely complete | project `status=done` |
 
-### 4. After every write: VERIFY
+## Phase 4 — VERIFY every write
 
-A successful PATCH/POST is not enough. Read the affected project/object back from OPK.
+Every POST/PATCH that changes project state must be followed by read-back.
 
-Only report "synced to OPK" if:
+Only say “OPK 已同步” when:
 
-- HTTP request succeeded, and
-- read-back reflects the intended state.
+- the write returned success; and
+- the affected project/object was read back and reflects the intended state.
 
-If synchronization fails:
+The supplied CLI does read-back verification for normal write commands.
 
-- do not claim success
-- keep the actual work result separate from sync status
-- report the HTTP/error reason concisely
-- do not expose credentials
+If synchronization fails, distinguish:
 
-## Project resolution safety
+- work result itself; and
+- OPK sync failure.
 
-Never silently update an ambiguous project.
+Never claim sync success based on assumption.
 
-Safe automatic selection is allowed when one of these is true:
+# API contract agents must know
 
-- exact project ID is known
-- exact case-insensitive project-name match exists
-- search returns exactly one plausible result
-- `.opk.json` explicitly maps the repository to a project ID
+Base URL:
 
-If multiple plausible projects remain and no fixed mapping exists, do not write to a guessed project. Report the ambiguity or create the mapping only if the task explicitly authorizes it.
+```text
+https://mes.fhkq.best
+```
 
-## Creating missing project state
+No auth header is required.
 
-If work clearly belongs to a new project and no project exists, an agent may create one when the user's instruction implies project creation/tracking.
+Core endpoints:
 
-Recommended defaults:
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/health` | service health |
+| GET | `/api/v1/dashboard` | dashboard summary |
+| POST | `/api/v1/project-ids` | generate fresh project UUID |
+| GET | `/api/v1/projects/similar?q=NAME` | detect same/similar projects |
+| GET | `/api/v1/projects` | list/search projects |
+| POST | `/api/v1/projects` | create project; accepts `project_id` or `id` |
+| GET | `/api/v1/projects/:id` | full project + milestones + issues |
+| PATCH | `/api/v1/projects/:id` | update project |
+| DELETE | `/api/v1/projects/:id` | delete project |
+| GET/POST | `/api/v1/projects/:id/milestones` | list/create milestones |
+| PATCH/DELETE | `/api/v1/milestones/:id` | update/delete milestone |
+| GET/POST | `/api/v1/projects/:id/issues` | list/create project issues |
+| GET | `/api/v1/issues` | list/filter issues |
+| PATCH/DELETE | `/api/v1/issues/:id` | update/delete issue |
+| GET | `/api/v1/export` | full JSON export |
+
+Machine-readable spec:
+
+```text
+https://mes.fhkq.best/openapi.json
+```
+
+See [`API.md`](./API.md) for request examples.
+
+# Project creation details
+
+## Generate a project id
+
+```bash
+python scripts/opk.py new-project-id
+```
+
+Equivalent API:
+
+```http
+POST /api/v1/project-ids
+```
+
+Example response:
 
 ```json
 {
+  "ok": true,
+  "data": {
+    "project_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+## Create with a pre-generated ID
+
+```http
+POST /api/v1/projects
+Content-Type: application/json
+
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Example Project",
   "status": "active",
   "priority": "medium"
 }
 ```
 
-Set `next_action` to the next concrete executable step, not a vague goal.
+The API returns the actual `project_id`.
 
-Good:
-
-```text
-Run hardware-in-loop validation on the revised Modbus retry logic and record 100-cycle error rate.
-```
-
-Bad:
-
-```text
-Continue working on project.
-```
-
-## Notes policy
-
-Notes should be short operational history, not a transcript.
-
-Prefer:
-
-```text
-2026-08-19: Production deploy succeeded; D1 migration and /api/health verified. Next: migrate active project backlog.
-```
-
-Avoid dumping chain-of-thought, long chat summaries, credentials, or irrelevant details.
-
-## Issue severity
-
-Use OPK severities consistently:
-
-- `critical`: blocks delivery/production or causes severe data/safety/business failure
-- `high`: materially blocks a key milestone or requires urgent correction
-- `medium`: meaningful issue with workaround or limited scope
-- `low`: minor defect, cleanup, or non-blocking improvement
-
-## Status enums
+# Status enums
 
 Project:
 
@@ -261,75 +323,58 @@ Severity:
 low | medium | high | critical
 ```
 
-## Common commands
-
-### Dashboard
+# Common commands
 
 ```bash
+# dashboard
 python scripts/opk.py dashboard
-```
 
-### List/search projects
+# detect duplicates before first submit
+python scripts/opk.py similar "New Project Name"
 
-```bash
-python scripts/opk.py projects
-python scripts/opk.py projects --q "OPK"
-python scripts/opk.py projects --status active
-```
+# safe bootstrap: auto-create only when no candidate exists
+python scripts/opk.py init-project --name "New Project Name" --priority high --next-action "Run first validation"
 
-### Full project context
+# explicit user chose create-new despite candidate
+python scripts/opk.py init-project --name "New Project Name" --new --priority high
 
-```bash
-python scripts/opk.py context --project-id <id>
-python scripts/opk.py context --q "project name"
-```
+# explicit user chose overwrite candidate
+python scripts/opk.py init-project --name "New Project Name" --overwrite <project-id> --next-action "Continue current work"
 
-### Update project
+# context
+python scripts/opk.py context --project-id <project-id>
 
-```bash
-python scripts/opk.py update-project <project-id> \
-  --status active \
-  --next-action "Run production verification" \
-  --notes "Deployment completed; verification pending."
-```
+# update project
+python scripts/opk.py update-project <project-id> --next-action "Next concrete step" --notes "Progress summary"
 
-### Add/update milestone
-
-```bash
-python scripts/opk.py add-milestone <project-id> \
-  --title "Production deployment" \
-  --status done \
-  --notes "Worker and health endpoint verified."
-
+# milestone
+python scripts/opk.py add-milestone <project-id> --title "Integration" --status in_progress
 python scripts/opk.py update-milestone <milestone-id> --status done
+
+# issue
+python scripts/opk.py add-issue <project-id> --title "Blocking defect" --severity high --status open
+python scripts/opk.py update-issue <issue-id> --status resolved --notes "Fixed and verified"
 ```
 
-### Add/update issue
+# Final-response contract
 
-```bash
-python scripts/opk.py add-issue <project-id> \
-  --title "Cloudflare token lacks D1 permission" \
-  --severity high \
-  --status open \
-  --next-action "Regenerate token with D1 Edit permission"
-
-python scripts/opk.py update-issue <issue-id> \
-  --status resolved \
-  --notes "New token validated in CI."
-```
-
-## Final-response contract
-
-For project work with a successful OPK sync, the final response should include a compact sync line such as:
+Successful sync:
 
 ```text
-OPK 已同步：里程碑「Production deployment」→ done；下一步 → Run production verification。
+OPK 已同步：项目 <name>；里程碑 <x> → done；下一步 → <next action>。
 ```
 
-For a failed sync:
+Duplicate decision required:
 
 ```text
-工作本身已完成；OPK 同步失败：HTTP 401。未将状态标记为已同步。
+OPK 查到相同/相似项目：
+- <name> (<id>, similarity=...)
+
+请选择：① 新提交，生成新的 project-id；② 覆盖这个已有项目。
 ```
 
-The final response must reflect the real API result, never an assumed update.
+Failed sync:
+
+```text
+工作本身已完成；OPK 同步失败：<actual API error>。未将状态标记为已同步。
+```
