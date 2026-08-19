@@ -19,8 +19,16 @@ jobs:
       - name: Compile OPK client
         run: python -m py_compile scripts/opk.py
       - name: CLI help smoke test
-        run: python scripts/opk.py --help >/dev/null
+        run: |
+          python scripts/opk.py --help >/dev/null
+          python scripts/opk.py init-project --help >/dev/null
       - name: Validate example JSON
         run: python -m json.tool .opk.example.json >/dev/null
-      - name: Verify skill entrypoint
-        run: test -s SKILL.md && grep -q "Mandatory execution loop" SKILL.md
+      - name: Verify skill entrypoint and API contract
+        run: |
+          test -s SKILL.md
+          test -s API.md
+          grep -q "No API key is required" SKILL.md
+          grep -q "projects/similar" SKILL.md
+          grep -q "project-ids" API.md
+          ! grep -R "OPK_API_KEY" SKILL.md README.md AGENTS.md scripts/opk.py API.md
